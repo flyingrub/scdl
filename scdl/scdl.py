@@ -525,6 +525,10 @@ def get_filename(track: BasicTrack, original_filename=None, aac=False, playlist_
         ext = os.path.splitext(original_filename)[1]
     filename = limit_filename_length(title, ext)
     filename = sanitize_filename(filename)
+
+    if playlist_info:
+        if playlist_info["tracknumber"]:
+            filename = f"{playlist_info['tracknumber']} - {filename}"
     return filename
 
 
@@ -840,6 +844,7 @@ def set_metadata(track: BasicTrack, filename: str, playlist_info=None, **kwargs)
     Sets the mp3 file metadata using the Python module Mutagen
     """
     logger.info("Setting tags...")
+
     artwork_url = track.artwork_url
     user = track.user
     if not artwork_url:
