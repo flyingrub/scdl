@@ -4,14 +4,16 @@
 """scdl allows you to download music from Soundcloud
 
 Usage:
-    scdl (-l <track_url> | me) [-a | -f | -C | -t | -p | -r][-c | --force-metadata]
+    scdl (-l <track_url> | me) [-a][-r][-t][-f][-C][-p][-c][--force-metadata]
     [-n <maxtracks>][-o <offset>][--hidewarnings][--debug | --error][--path <path>]
     [--addtofile][--addtimestamp][--onlymp3][--hide-progress][--min-size <size>]
     [--max-size <size>][--remove][--no-album-tag][--no-playlist-folder]
     [--download-archive <file>][--sync <file>][--extract-artist][--flac][--original-art]
     [--original-name][--no-original][--only-original][--name-format <format>]
     [--strict-playlist][--playlist-name-format <format>][--client-id <id>]
-    [--auth-token <token>][--overwrite][--no-playlist]
+    [--auth-token <token>][--overwrite][--no-playlist][--playlist-file]
+    [--playlist-file-retain][--playlist-file-name][--playlist-file-extension]
+    [--playlist-file-cache]
     
     scdl -h | --help
     scdl --version
@@ -64,6 +66,11 @@ Options:
     --overwrite                     Overwrite file if it already exists
     --strict-playlist               Abort playlist downloading if one track fails to download
     --no-playlist                   Skip downloading playlists
+    --playlist-file                 Generate m3u playlist files (and additionally check them when used with --remove)
+    --playlist-file-retain          Retain corrupted items
+    --playlist-file-name            Specify playlist file name without extension
+    --playlist-file-extension       Specify extension to playlist file
+    --playlist-file-cache           Skip updates for present files
 """
 
 import cgi
@@ -110,6 +117,9 @@ logger.addFilter(utils.ColorizeFilter())
 fileToKeep = []
 
 class SoundCloudException(Exception):
+    pass
+
+class SoundCloudSoftException(Exception):
     pass
 
 def handle_exception(exc_type, exc_value, exc_traceback):
@@ -239,7 +249,7 @@ def main():
     download_url(client, **python_args)
 
     if arguments["--remove"]:
-        remove_files()
+        remove_files(arguments["--playlist-file"] is not None, kwdefget("playlist_file_extension", "m3u8", **python_args))
 
 
 def validate_url(client: SoundCloud, url: str):
@@ -293,6 +303,9 @@ def get_config(config_file: pathlib.Path) -> configparser.ConfigParser:
         
     return config
 
+def kwdefget(findkey, defaultvalue, **kwargs):
+    if not kwargs.get(findkey): return defaultvalue
+    return kwargs.get(findkey)
 
 def download_url(client: SoundCloud, **kwargs):
     """
@@ -315,85 +328,127 @@ def download_url(client: SoundCloud, **kwargs):
     elif item.kind == "user":
         user = item
         logger.info("Found a user profile")
+        if not kwargs.get("f") and not kwargs.get("C") and not kwargs.get("t") and not kwargs.get("a") and not kwargs.get("p") and not kwargs.get("r"):
+            logger.error("Please provide a download type...")
+            sys.exit(1)
         if kwargs.get("f"):
             logger.info(f"Retrieving all likes of user {user.username}...")
-            resources = client.get_user_likes(user.id, limit=1000)
+            playlistcache=None if not kwargs.get("playlist_file_cache") else playlist_map_read(kwdefget("playlist_file_name", "Likes", **kwargs) + "." + kwdefget("playlist_file_extension", "m3u8", **kwargs))
+            playlistbuffer=None if not kwargs.get("playlist_file") else []
+            subplaylistbuffer=None if not kwargs.get("playlist_file") else []
+            resources = client.get_user_likes(user.id, limit=int(kwdefget("n", "1000", **kwargs)))
+            ilim=int(kwdefget("n", "-1", **kwargs))
             for i, like in itertools.islice(enumerate(resources, 1), offset, None):
                 logger.info(f"like n°{i} of {user.likes_count}")
                 if hasattr(like, "track"):
-                    download_track(client, like.track, exit_on_fail=kwargs.get("strict_playlist"), **kwargs)
+                    download_track_cached(client, like.track, exit_on_fail=kwargs.get("strict_playlist"), playlist_cache=playlistcache, playlist_buffer=playlistbuffer, **kwargs)
                 elif hasattr(like, "playlist"):
-                    download_playlist(client, client.get_playlist(like.playlist.id), **kwargs)
+                    download_playlist(client, client.get_playlist(like.playlist.id), playlist_filename_prefix=kwdefget("playlist_file_name", "Likes", **kwargs) + " - ", subplaylist_buffer=subplaylistbuffer, **kwargs)
                 else:
                     logger.error(f"Unknown like type {like}")
                     if kwargs.get("strict_playlist"):
                         sys.exit(1)
+                ilim=ilim-1
+                if ilim == 0: break
+            if kwargs.get("playlist_file"):
+                playlist_process(client, playlistbuffer, kwdefget("playlist_file_name", "Likes", **kwargs) + "." + kwdefget("playlist_file_extension", "m3u8", **kwargs), **kwargs)
+                playlist_process(client, subplaylistbuffer, kwdefget("playlist_file_name", "Likes Playlists", **kwargs) + "." + kwdefget("playlist_file_extension", "m3u8", **kwargs), no_export=True, **kwargs)
             logger.info(f"Downloaded all likes of user {user.username}!")
-        elif kwargs.get("C"):
+        if kwargs.get("C"):
             logger.info(f"Retrieving all commented tracks of user {user.username}...")
+            playlistcache=None if not kwargs.get("playlist_file_cache") else playlist_map_read(kwdefget("playlist_file_name", "Commented", **kwargs) + "." + kwdefget("playlist_file_extension", "m3u8", **kwargs))
+            playlistbuffer=None if not kwargs.get("playlist_file") else []
             resources = client.get_user_comments(user.id, limit=1000)
             for i, comment in itertools.islice(enumerate(resources, 1), offset, None):
                 logger.info(f"comment n°{i} of {user.comments_count}")
-                download_track(client, client.get_track(comment.track.id), exit_on_fail=kwargs.get("strict_playlist"), **kwargs)
+                download_track_cached(client, client.get_track(comment.track.id), exit_on_fail=kwargs.get("strict_playlist"), playlist_cache=playlistcache, playlist_buffer=playlistbuffer, **kwargs)
+            if kwargs.get("playlist_file"): playlist_process(client, playlistbuffer, kwdefget("playlist_file_name", "Commented", **kwargs) + "." + kwdefget("playlist_file_extension", "m3u8", **kwargs), **kwargs)
             logger.info(f"Downloaded all commented tracks of user {user.username}!")
-        elif kwargs.get("t"):
+        if kwargs.get("t"):
             logger.info(f"Retrieving all tracks of user {user.username}...")
+            playlistbuffer=None if not kwargs.get("playlist_file") else []
+            playlistcache=None if not kwargs.get("playlist_file_cache") else playlist_map_read(kwdefget("playlist_file_name", "Tracks", **kwargs) + "." + kwdefget("playlist_file_extension", "m3u8", **kwargs))
             resources = client.get_user_tracks(user.id, limit=1000)
             for i, track in itertools.islice(enumerate(resources, 1), offset, None):
                 logger.info(f"track n°{i} of {user.track_count}")
-                download_track(client, track, exit_on_fail=kwargs.get("strict_playlist"), **kwargs)
+                download_track_cached(client, track, exit_on_fail=kwargs.get("strict_playlist"), playlist_cache=playlistcache, playlist_buffer=playlistbuffer, **kwargs)
+            if kwargs.get("playlist_file"): playlist_process(client, playlistbuffer, kwdefget("playlist_file_name", "Tracks", **kwargs) + "." + kwdefget("playlist_file_extension", "m3u8", **kwargs), **kwargs)
             logger.info(f"Downloaded all tracks of user {user.username}!")
-        elif kwargs.get("a"):
+        if kwargs.get("a"):
             logger.info(f"Retrieving all tracks & reposts of user {user.username}...")
+            playlistcache=None if not kwargs.get("playlist_file_cache") else playlist_map_read(kwdefget("playlist_file_name", "Stream", **kwargs) + "." + kwdefget("playlist_file_extension", "m3u8", **kwargs))
+            playlistbuffer=None if not kwargs.get("playlist_file") else []
+            subplaylistbuffer=None if not kwargs.get("playlist_file") else []
             resources = client.get_user_stream(user.id, limit=1000)
             for i, item in itertools.islice(enumerate(resources, 1), offset, None):
                 logger.info(f"item n°{i} of {user.track_count + user.reposts_count if user.reposts_count else '?'}")
                 if item.type in ("track", "track-repost"):
-                    download_track(client, item.track, exit_on_fail=kwargs.get("strict_playlist"), **kwargs)
+                    download_track_cached(client, item.track, exit_on_fail=kwargs.get("strict_playlist"), playlist_cache=playlistcache, playlist_buffer=playlistbuffer, **kwargs)
                 elif item.type in ("playlist", "playlist-repost"):
-                    download_playlist(client, item.playlist, **kwargs)
+                    download_playlist(client, item.playlist, kwdefget("playlist_file_name", "Stream", **kwargs) + " - ", subplaylist_buffer=subplaylistbuffer, **kwargs)
                 else:
                     logger.error(f"Unknown item type {item.type}")
                     if kwargs.get("strict_playlist"):
                         sys.exit(1)
+            if kwargs.get("playlist_file"):
+                playlist_process(client, playlistbuffer, kwdefget("playlist_file_name", "Stream", **kwargs) + "." + kwdefget("playlist_file_extension", "m3u8", **kwargs), **kwargs)
+                playlist_process(client, subplaylistbuffer, kwdefget("playlist_file_name", "Stream Playlists", **kwargs) + "." + kwdefget("playlist_file_extension", "m3u8", **kwargs), no_export=True, **kwargs)
             logger.info(f"Downloaded all tracks & reposts of user {user.username}!")
-        elif kwargs.get("p"):
+        if kwargs.get("p"):
             logger.info(f"Retrieving all playlists of user {user.username}...")
+            #subplaylistbuffer=None if not kwargs.get("playlist_file") else []
             resources = client.get_user_playlists(user.id, limit=1000)
             for i, playlist in itertools.islice(enumerate(resources, 1), offset, None):
                 logger.info(f"playlist n°{i} of {user.playlist_count}")
-                download_playlist(client, playlist, **kwargs)
+                download_playlist(client, playlist, **kwargs) # subplaylist_buffer=subplaylistbuffer, 
+            #if kwargs.get("playlist_file"):
+            #    playlist_process(client, subplaylistbuffer, kwdefget("playlist_file_name", "Playlists", **kwargs) + "." + kwdefget("playlist_file_extension", "m3u8", **kwargs), no_export=True, **kwargs)
             logger.info(f"Downloaded all playlists of user {user.username}!")
-        elif kwargs.get("r"):
+        if kwargs.get("r"):
             logger.info(f"Retrieving all reposts of user {user.username}...")
+            playlistcache=None if not kwargs.get("playlist_file_cache") else playlist_map_read(kwdefget("playlist_file_name", "Reposts", **kwargs) + "." + kwdefget("playlist_file_extension", "m3u8", **kwargs))
+            playlistbuffer=None if not kwargs.get("playlist_file") else []
+            subplaylistbuffer=None if not kwargs.get("playlist_file") else []
             resources = client.get_user_reposts(user.id, limit=1000)
             for i, item in itertools.islice(enumerate(resources, 1), offset, None):
                 logger.info(f"item n°{i} of {user.reposts_count or '?'}")
                 if item.type == "track-repost":
-                    download_track(client, item.track, exit_on_fail=kwargs.get("strict_playlist"), **kwargs)
+                    download_track_cached(client, item.track, exit_on_fail=kwargs.get("strict_playlist"), playlist_cache=playlistcache, playlist_buffer=playlistbuffer, **kwargs)
                 elif item.type == "playlist-repost":
-                    download_playlist(client, item.playlist, **kwargs)
+                    download_playlist(client, item.playlist, kwdefget("playlist_file_name", "Reposts", **kwargs) + " - ", subplaylist_buffer=subplaylistbuffer, **kwargs)
                 else:
                     logger.error(f"Unknown item type {item.type}")
                     if kwargs.get("strict_playlist"):
                         sys.exit(1)
+            if kwargs.get("playlist_file"):
+                playlist_process(client, playlistbuffer, kwdefget("playlist_file_name", "Reposts", **kwargs) + "." + kwdefget("playlist_file_extension", "m3u8", **kwargs), **kwargs)
+                playlist_process(client, subplaylistbuffer, kwdefget("playlist_file_name", "Reposts Playlists", **kwargs) + "." + kwdefget("playlist_file_extension", "m3u8", **kwargs), no_export=True, **kwargs)
             logger.info(f"Downloaded all reposts of user {user.username}!")
-        else:
-            logger.error("Please provide a download type...")
-            sys.exit(1)
+
     else:
         logger.error(f"Unknown item type {item.kind}")
         sys.exit(1)
 
-def remove_files():
+def remove_files(check_playlist_file, playlist_file_extension):
     """
     Removes any pre-existing tracks that were not just downloaded
     """
     logger.info("Removing local track files that were not downloaded...")
-    files = [f for f in os.listdir(".") if os.path.isfile(f)]
-    for f in files:
-        if f not in fileToKeep:
-            os.remove(f)
+    dirs = [d for d in os.listdir(".") if os.path.isdir(d)]
+    dirs.insert(0, ".")
+    for d in dirs:
+        files = [f for f in os.listdir(d) if os.path.isfile(f)]
+        playlist_data = []
+        for plfile in files:
+            if plfile.endswith(playlist_file_extension): playlist_data += playlist_import(plfile)
+        if len(playlist_data) == 0: continue
+        logger.debug(f"Removing from {d}")
+      
+        if playlist_data is None: continue
+        for f in files:
+            if not f.endswith(playlist_file_extension) and not f.endswith(playlist_file_extension + ".map") and f not in fileToKeep and f not in playlist_data:
+                logger.info(f"Deleting {f}")
+                os.remove(os.path.join(d, f))
 
 def sync(client: SoundCloud, playlist: BasicAlbumPlaylist, playlist_info, **kwargs):
     """
@@ -442,7 +497,7 @@ def sync(client: SoundCloud, playlist: BasicAlbumPlaylist, playlist_info, **kwar
         logger.info('No tracks to download. Exiting...')
         sys.exit(0)
 
-def download_playlist(client: SoundCloud, playlist: BasicAlbumPlaylist, **kwargs):
+def download_playlist(client: SoundCloud, playlist: BasicAlbumPlaylist, playlist_filename_prefix="", subplaylist_buffer=None, **kwargs):
     """
     Downloads a playlist
     """
@@ -470,6 +525,9 @@ def download_playlist(client: SoundCloud, playlist: BasicAlbumPlaylist, **kwargs
             )
             playlist.tracks = playlist.tracks[: int(kwargs.get("n"))]
             kwargs["playlist_offset"] = 0
+
+        if not playlist.tracks or len(playlist.tracks) == 0: return
+            
         if kwargs.get("sync"):
                   if os.path.isfile(kwargs.get("sync")):
                         playlist.tracks = sync(client, playlist, playlist_info, **kwargs)
@@ -478,6 +536,8 @@ def download_playlist(client: SoundCloud, playlist: BasicAlbumPlaylist, **kwargs
                         sys.exit(1)
 
         tracknumber_digits = len(str(len(playlist.tracks)))
+        playlistbuffer=None if not kwargs.get("playlist_file") else []
+        playlistcache=None if not kwargs.get("playlist_file_cache") else playlist_map_read(kwdefget("playlist_file_name", "Likes", **kwargs) + "." + kwdefget("playlist_file_extension", "m3u8", **kwargs))
         for counter, track in itertools.islice(enumerate(playlist.tracks, 1), kwargs.get("playlist_offset", 0), None):
             logger.debug(track)
             logger.info(f"Track n°{counter}")
@@ -488,7 +548,14 @@ def download_playlist(client: SoundCloud, playlist: BasicAlbumPlaylist, **kwargs
                 else:
                     track = client.get_track(track.id)
 
-            download_track(client, track, playlist_info, kwargs.get("strict_playlist"), **kwargs)
+            download_track_cached(client, track, playlist_info, kwargs.get("strict_playlist"), playlist_cache=playlistcache, playlist_buffer=playlistbuffer, **kwargs)
+        if kwargs.get("playlist_file"):
+            playlist_filename=playlist_filename_prefix + playlist_name + ".m3u8"
+            playlist_process(client, playlistbuffer, playlist_filename, **kwargs)
+            if subplaylist_buffer: subplaylist_buffer.append({ "id": playlist.id, "path": playlist_filename, "uri": playlist.uri })
+    except BaseException as err:
+        logger.error(err)
+        return False
     finally:
         if not kwargs.get("no_playlist_folder"):
             os.chdir("..")
@@ -671,20 +738,22 @@ def download_hls(client: SoundCloud, track: BasicTrack, title: str, playlist_inf
 
     # Get the requests stream
     url = get_transcoding_m3u8(client, transcoding, **kwargs)
-    filename_path = os.path.abspath(filename)
+    temp = tempfile.NamedTemporaryFile(delete=False)
+    temp_filename = temp.name + os.path.splitext(filename)[1]
 
     p = subprocess.Popen(
-        ["ffmpeg", "-i", url, "-c", "copy", filename_path, "-loglevel", "error"],
+        ["ffmpeg", "-i", url, "-c", "copy", temp_filename, "-loglevel", "error"],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE
     )
     stdout, stderr = p.communicate()
     if stderr:
         logger.error(stderr.decode("utf-8"))
+    shutil.move(temp_filename, os.path.join(os.getcwd(), filename))
     return (filename, False)
 
 
-def download_track(client: SoundCloud, track: BasicTrack, playlist_info=None, exit_on_fail=True, **kwargs):
+def download_track(client: SoundCloud, track: BasicTrack, playlist_info=None, exit_on_fail=True, playlist_buffer=None, **kwargs):
     """
     Downloads a track
     """
@@ -723,7 +792,8 @@ def download_track(client: SoundCloud, track: BasicTrack, playlist_info=None, ex
 
         # Skip if file ID or filename already exists
         if is_already_downloaded and not kwargs.get("force_metadata"):
-            raise SoundCloudException(f"{filename} already downloaded.")
+            if playlist_buffer is not None: playlist_buffer.append({ "id": track.id, "path": filename, "uri": track.uri })
+            raise SoundCloudSoftException(f"{filename} already downloaded.")
 
         # If file does not exist an error occurred
         if not os.path.isfile(filename):
@@ -749,12 +819,23 @@ def download_track(client: SoundCloud, track: BasicTrack, playlist_info=None, ex
         filetime = int(time.mktime(track.created_at.timetuple()))
         try_utime(filename, filetime)
 
+        if playlist_buffer is not None: playlist_buffer.append({ "id": track.id, "path": filename, "uri": track.uri })
         logger.info(f"{filename} Downloaded.\n")
+        return True
+        
     except SoundCloudException as err:
         logger.error(err)
         if exit_on_fail:
             sys.exit(1)
+        return False
 
+    except SoundCloudSoftException as err:
+        logger.error(err)
+        return False
+
+    except BaseException as err:
+        logger.error(err)
+        return False
 
 def can_convert(filename):
     ext = os.path.splitext(filename)[1]
@@ -856,16 +937,19 @@ def set_metadata(track: BasicTrack, filename: str, playlist_info=None, **kwargs)
             ):
                 response = None
         except Exception:
-            pass
-    if response is None:
-        new_artwork_url = artwork_url.replace("large", "t500x500")
-        response = requests.get(new_artwork_url, stream=True)
-        if response.headers["Content-Type"] not in (
-            "image/png",
-            "image/jpeg",
-            "image/jpg",
-        ):
             response = None
+    try:
+        if response is None:
+            new_artwork_url = artwork_url.replace("large", "t500x500")
+            response = requests.get(new_artwork_url, stream=True)
+            if response.headers["Content-Type"] not in (
+                "image/png",
+                "image/jpeg",
+                "image/jpg",
+            ):
+                response = None
+    except Exception:
+        response = None
     if response is None:
         logger.error(f"Could not get cover art at {new_artwork_url}")
     with tempfile.NamedTemporaryFile() as out_file:
@@ -894,7 +978,7 @@ def set_metadata(track: BasicTrack, filename: str, playlist_info=None, **kwargs)
                 )
             elif mutagen_file.__class__ == mutagen.mp4.MP4:
                 mutagen_file["\xa9cmt"] = track.description
-        if response:
+        if response is not None:
             if mutagen_file.__class__ == mutagen.flac.FLAC:
                 p = mutagen.flac.Picture()
                 p.data = out_file.read()
@@ -955,5 +1039,117 @@ def is_ffmpeg_available():
     """
     return shutil.which("ffmpeg") is not None
 
+def playlist_process(client: SoundCloud, playlist_buffer, playlist_filename, no_export=False, no_retain=False, **kwargs):
+    if kwargs.get("playlist_file_retain") and no_retain == False:
+        oldint = playlist_map_read(playlist_filename)
+        oldext = None if no_export == True else playlist_import(playlist_filename)
+        oldindex=-1
+
+        logger.debug(f"Old Map: {oldint}")
+        logger.debug("Old Playlist: {oldext}")
+        
+        for oldel in reversed(oldint):
+            tpath=oldel["path"]
+            oldindex=oldindex+1
+            if oldel["id"] == "-1":
+                # Stop retaining track if deleted from playlist by the user
+                if no_export == False and oldext is not None and oldel["path"] not in oldext:
+                    logger.debug(f"Not retaining {tpath} ({oldel['uri']})")
+                    continue
+                # Stop retaining playlist if according file deleted by the user
+                elif no_export == True and not os.path.isfile(oldel["path"]):
+                    logger.debug(f"Not retaining {tpath} ({oldel['uri']})")
+                    continue
+                # Stop retaining if track or playlist has been restored
+                if next((newel for newel in playlist_buffer if newel["uri"] == oldel["uri"]), None) is not None:
+                    logger.debug(f"Stopping to retain restored {tpath} ({oldel['uri']})")
+                    continue
+
+            else:
+                # Check if item removed
+                if next((newel for newel in playlist_buffer if newel["uri"] == oldel["uri"]), None) is not None: continue
+                # Check if item removed because it is corrupted
+                if check_item(client, oldel["uri"]) == True:
+                    # Item not corrupted
+                    logger.debug(f"Not retaining {tpath} ({oldel['uri']})")
+                    if no_export == True and os.path.isfile(oldel["path"]): os.remove(oldel["path"])
+                    continue
+                oldel["id"] = "-1"
+
+            # Temporarily retain item due to corrupted file on server
+            logger.debug(f"Retaining {tpath} ({oldel['uri']})")
+            newindex = 0 if len(playlist_buffer) - oldindex < 0 else len(playlist_buffer) - oldindex
+            playlist_buffer.insert(newindex, oldel)
+
+        logger.debug(f"New Map: {playlist_buffer}")
+
+    if kwargs.get("playlist_file_retain") or (kwargs.get("playlist_file_cache") and no_retain == False):
+        playlist_map_write(playlist_buffer, playlist_filename)
+        
+    if no_export == False:
+        playlist_export(playlist_buffer, playlist_filename)
+
+def playlist_map_read(playlist_filename):
+    try:
+        res = []
+        if not os.path.isfile(playlist_filename + ".map"): return res
+        with open(playlist_filename + ".map", "r") as fin:
+            for fline in fin.read().splitlines():
+                ffields = fline.split(":", 2)
+                if len(ffields) == 3: res.append({ "id": ffields[0], "path": ffields[1], "uri": ffields[2] })
+        return res
+    except Exception:
+        return []
+
+def playlist_map_write(playlist_buffer, playlist_filename):
+    if playlist_buffer is None or len(playlist_buffer) == 0: return
+    with open(playlist_filename + ".map", "w") as fout:
+        for playlist_item in playlist_buffer:
+            fout.write(str(playlist_item["id"]) + ":" + playlist_item["path"] + ":" + playlist_item["uri"] + "\n")
+
+def playlist_import(playlist_filename):
+    try:
+        res = []
+        if not os.path.isfile(playlist_filename): return None
+        with open(playlist_filename, "r") as fin:
+            for fline in fin.read().splitlines():
+                if not fline.startswith("#EXT") or fline == sanitize_filename(fline): res.append(fline)
+                    
+        return res
+    except Exception:
+        return None
+
+def playlist_export(playlist_buffer, playlist_filename):
+    with open(playlist_filename, "w") as fout:
+        for playlist_item in playlist_buffer:
+            fout.write(playlist_item["path"] + "\n")
+
+def check_item(client: SoundCloud, itemuri):
+    item = client.resolve(itemuri)
+    if not item:
+        return False
+    elif item.kind == "track":
+        if item.policy == "BLOCK": return False
+        if item.downloadable and client.get_track_original_download(item.id, item.secret_token): return True
+        if not item.media.transcodings: return False
+        for t in item.media.transcodings:
+            if t.format.protocol == "hls" and "aac" in t.preset: return True
+            elif t.format.protocol == "hls" and "mp3" in t.preset: return True
+        return False
+    elif item.kind == "playlist":
+        return item.tracks is not None and len(item.tracks) > 0
+    elif item.kind == "user":
+        return True
+    else:
+        return False
+
+def download_track_cached(client: SoundCloud, track: BasicTrack, playlist_info=None, exit_on_fail=True, playlist_cache=None, playlist_buffer=None, **kwargs):
+    if playlist_cache is not None and playlist_buffer is not None:
+        cacheres = next((cached for cached in playlist_cache if cached["id"] == str(track.id)), None)
+        if cacheres is not None and cacheres["path"] is not None and os.path.isfile(cacheres["path"]):
+            playlist_buffer.append({ "id": track.id, "path": cacheres["path"], "uri": track.uri })
+            return True
+    return download_track(client, track, playlist_info=playlist_info, exit_on_fail=exit_on_fail, playlist_buffer=playlist_buffer, **kwargs)
+    
 if __name__ == "__main__":
     main()
