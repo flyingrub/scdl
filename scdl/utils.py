@@ -17,8 +17,7 @@ class ColorizeFilter(logging.Filter):
     color_by_level = {
         logging.DEBUG: 'blue',
         logging.WARNING: 'yellow',
-        logging.ERROR: 'red',
-        logging.INFO: 'white'
+        logging.ERROR: 'red'
     }
 
     def filter(self, record):
