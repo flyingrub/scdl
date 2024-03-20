@@ -11,7 +11,7 @@ Usage:
     [--download-archive <file>][--sync <file>][--extract-artist][--flac][--original-art]
     [--original-name][--no-original][--only-original][--name-format <format>]
     [--strict-playlist][--playlist-name-format <format>][--client-id <id>]
-    [--auth-token <token>][--overwrite][--no-playlist]
+    [--auth-token <token>][--overwrite][--no-playlist][--add-description]
     
     scdl -h | --help
     scdl --version
@@ -64,6 +64,7 @@ Options:
     --overwrite                     Overwrite file if it already exists
     --strict-playlist               Abort playlist downloading if one track fails to download
     --no-playlist                   Skip downloading playlists
+    --add-description               Adds the description to a seperate txt file (can be read by some players)
 """
 
 import cgi
@@ -720,6 +721,7 @@ def download_track(client: SoundCloud, track: BasicTrack, playlist_info=None, ex
             fileToKeep.append(filename)
 
         record_download_archive(track, **kwargs)
+        create_description_file(track, filename, kwargs)
 
         # Skip if file ID or filename already exists
         if is_already_downloaded and not kwargs.get("force_metadata"):
@@ -759,6 +761,24 @@ def download_track(client: SoundCloud, track: BasicTrack, playlist_info=None, ex
 def can_convert(filename):
     ext = os.path.splitext(filename)[1]
     return "wav" in ext or "aif" in ext
+
+
+def create_description_file(track: BasicTrack, filename: str, kwargs):
+    """
+    Creates txt file containing the description
+    """
+    if kwargs.get("add_description") and len(track.description) > 3:
+        try:
+            filenameObj = pathlib.Path(filename)
+            descriptionFilename = filenameObj.with_suffix('.txt')
+            with open(descriptionFilename, "a", encoding="utf-8") as file:
+                file.write(track.description)
+            logger.info('Created description txt file')
+        except IOError as ioe:
+            logger.error("Error trying to write description txt file...")
+            logger.error(ioe)
+    
+    return True
 
 
 def already_downloaded(track: BasicTrack, title: str, filename: str, **kwargs):
