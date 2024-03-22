@@ -1,18 +1,17 @@
 #!/usr/bin/env python3
 # -*- encoding: utf-8 -*-
-
 """scdl allows you to download music from Soundcloud
 
 Usage:
     scdl (-l <track_url> | me) [-a | -f | -C | -t | -p | -r][-c | --force-metadata]
     [-n <maxtracks>][-o <offset>][--hidewarnings][--debug | --error][--path <path>]
     [--addtofile][--addtimestamp][--onlymp3][--hide-progress][--min-size <size>]
-    [--max-size <size>][--remove][--no-album-tag][--no-playlist-folder]
+    [--max-size <size>][--remove][--no-album-tag][--no-playlist-folder][--config-file <file>][--history]
     [--download-archive <file>][--sync <file>][--extract-artist][--flac][--original-art]
     [--original-name][--no-original][--only-original][--name-format <format>]
     [--strict-playlist][--playlist-name-format <format>][--client-id <id>]
     [--auth-token <token>][--overwrite][--no-playlist]
-    
+
     scdl -h | --help
     scdl --version
 
@@ -38,6 +37,9 @@ Options:
     --debug                         Set log level to DEBUG
     --download-archive [file]       Keep track of track IDs in an archive file,
                                     and skip already-downloaded files
+
+    --config-file [file]            Select a configuration file to launch the tool
+    --history                       Download Listening History
     --error                         Set log level to ERROR
     --extract-artist                Set artist tag from title instead of username
     --hide-progress                 Hide the wget progress bar
@@ -134,6 +136,8 @@ def main():
     # Parse arguments
     arguments = docopt(__doc__, version=__version__)
 
+
+
     if arguments["--debug"]:
         logger.level = logging.DEBUG
     elif arguments["--error"]:
@@ -143,6 +147,9 @@ def main():
         config_file = pathlib.Path(os.environ["XDG_CONFIG_HOME"], "scdl", "scdl.cfg")
     else:
         config_file = pathlib.Path.home().joinpath(".config", "scdl", "scdl.cfg")
+        config_file = pathlib.Path.home().joinpath(".config", "scdl", arguments["--config-file"] or "scdl.cfg")
+        print(config_file)
+        # exit()
 
     # import conf file
     config = get_config(config_file)
@@ -329,6 +336,7 @@ def download_url(client: SoundCloud, **kwargs):
                     if kwargs.get("strict_playlist"):
                         sys.exit(1)
             logger.info(f"Downloaded all likes of user {user.username}!")
+
         elif kwargs.get("C"):
             logger.info(f"Retrieving all commented tracks of user {user.username}...")
             resources = client.get_user_comments(user.id, limit=1000)
@@ -336,6 +344,25 @@ def download_url(client: SoundCloud, **kwargs):
                 logger.info(f"comment n°{i} of {user.comments_count}")
                 download_track(client, client.get_track(comment.track.id), exit_on_fail=kwargs.get("strict_playlist"), **kwargs)
             logger.info(f"Downloaded all commented tracks of user {user.username}!")
+
+        elif kwargs.get("history"):
+            """Retrieve all listening history of user"""
+            # Write string into logger.info that considers -n flag when displaying message. where n is a integer which if None then it will display string empty string
+            # by copilot
+            logger.info(f"Retrieving all listening history of user {user.username} {'upto last {} tracks'.format(kwargs.get('n')) if kwargs.get('n') else ''}...")
+            history = client.get_history(limit=kwargs.get('n') or 1000)
+            for i, track in itertools.islice(enumerate(history.tracks, 1), offset, None):
+                logger.info(f"track n°{i} of {len(history.tracks)}")
+                if hasattr(track, "track"):
+                    download_track(client, track.track, exit_on_fail=kwargs.get("strict_playlist"), **kwargs)
+#                elif hasattr(like, "playlist"):
+#                    download_playlist(client, client.get_playlist(like.playlist.id), **kwargs)
+                else:
+                    logger.error(f"Unknown history track type {track}")
+#                    if kwargs.get("strict_playlist"):
+#                        sys.exit(1)
+            logger.info(f"Downloaded all history of user {user.username}!{'upto last {} tracks'.format(kwargs.get('n')) if kwargs.get('n') else ''}...")
+
         elif kwargs.get("t"):
             logger.info(f"Retrieving all tracks of user {user.username}...")
             resources = client.get_user_tracks(user.id, limit=1000)
