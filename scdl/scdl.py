@@ -11,7 +11,7 @@ Usage:
     [--download-archive <file>][--sync <file>][--extract-artist][--flac][--original-art]
     [--original-name][--no-original][--only-original][--name-format <format>]
     [--strict-playlist][--playlist-name-format <format>][--client-id <id>]
-    [--auth-token <token>][--overwrite][--no-playlist]
+    [--auth-token <token>][--overwrite][--no-playlist][--onlyhq]
     
     scdl -h | --help
     scdl --version
@@ -64,6 +64,7 @@ Options:
     --overwrite                     Overwrite file if it already exists
     --strict-playlist               Abort playlist downloading if one track fails to download
     --no-playlist                   Skip downloading playlists
+    --onlyhq                        Skip downloading track if it is only available in 128kbps mp3
 """
 
 import cgi
@@ -418,17 +419,20 @@ def sync(client: SoundCloud, playlist: BasicAlbumPlaylist, playlist_info, **kwar
     rem = set(old).difference(new) # find tracks to remove
 
     if not (add or rem):
-        logger.info("No changes found. Exiting...")
-        sys.exit(0)
+        logger.info("No changes found")
+        return
 
     if rem:
         for track_id in rem:
-            filename = get_filename(client.get_track(track_id),playlist_info=playlist_info,**kwargs)
-            if filename in os.listdir('.'):
-                os.remove(filename)
-                logger.info(f'Removed {filename}')
-            else:
-                logger.info(f'Could not find {filename} to remove')
+            rem_file_prefix = os.path.splitext(get_filename(client.get_track(track_id),playlist_info=playlist_info,**kwargs))[0]
+            removed = False
+            for file in os.listdir('.'):
+                if rem_file_prefix == os.path.splitext(file)[0]:
+                    os.remove(file)
+                    removed = True
+                    logger.info(f'Removed {file}')
+            if not removed:
+                logger.info(f'Could not find {rem_file_prefix} to remove')
         with open(archive,'w') as f:
           for track_id in old:
             if track_id not in rem:
@@ -439,8 +443,7 @@ def sync(client: SoundCloud, playlist: BasicAlbumPlaylist, playlist_info, **kwar
     if add:
         return [track for track in playlist.tracks if track.id in add]
     else:
-        logger.info('No tracks to download. Exiting...')
-        sys.exit(0)
+        logger.info('No tracks to download')
 
 def download_playlist(client: SoundCloud, playlist: BasicAlbumPlaylist, **kwargs):
     """
@@ -449,8 +452,8 @@ def download_playlist(client: SoundCloud, playlist: BasicAlbumPlaylist, **kwargs
     if kwargs.get("no_playlist"):
         logger.info("Skipping playlist...")
         return
-    playlist_name = playlist.title.encode("utf-8", "ignore")
-    playlist_name = playlist_name.decode("utf-8")
+    playlist_name = playlist.title.encode("ascii", "ignore")
+    playlist_name = playlist_name.decode("ascii")
     playlist_name = sanitize_filename(playlist_name)
     playlist_info = {
                 "author": playlist.user.username,
@@ -475,20 +478,21 @@ def download_playlist(client: SoundCloud, playlist: BasicAlbumPlaylist, **kwargs
                         playlist.tracks = sync(client, playlist, playlist_info, **kwargs)
                   else:
                         logger.error(f'Invalid sync archive file {kwargs.get("sync")}')
-                        sys.exit(1)
+                        return
 
-        tracknumber_digits = len(str(len(playlist.tracks)))
-        for counter, track in itertools.islice(enumerate(playlist.tracks, 1), kwargs.get("playlist_offset", 0), None):
-            logger.debug(track)
-            logger.info(f"Track n°{counter}")
-            playlist_info["tracknumber"] = str(counter).zfill(tracknumber_digits)
-            if isinstance(track, MiniTrack):
-                if playlist.secret_token:
-                    track = client.get_tracks([track.id], playlist.id, playlist.secret_token)[0]
-                else:
-                    track = client.get_track(track.id)
+        if playlist.tracks is not None:
+            tracknumber_digits = len(str(len(playlist.tracks)))
+            for counter, track in itertools.islice(enumerate(playlist.tracks, 1), kwargs.get("playlist_offset", 0), None):
+                logger.debug(track)
+                logger.info(f"Track n°{counter}")
+                playlist_info["tracknumber"] = str(counter).zfill(tracknumber_digits)
+                if isinstance(track, MiniTrack):
+                    if playlist.secret_token:
+                        track = client.get_tracks([track.id], playlist.id, playlist.secret_token)[0]
+                    else:
+                        track = client.get_track(track.id)
 
-            download_track(client, track, playlist_info, kwargs.get("strict_playlist"), **kwargs)
+                download_track(client, track, playlist_info, kwargs.get("strict_playlist"), **kwargs)
     finally:
         if not kwargs.get("no_playlist_folder"):
             os.chdir("..")
@@ -502,7 +506,7 @@ def try_utime(path, filetime):
 def get_filename(track: BasicTrack, original_filename=None, aac=False, playlist_info=None, **kwargs):
     
     username = track.user.username
-    title = track.title.encode("utf-8", "ignore").decode("utf-8")
+    title = track.title.encode("ascii", "ignore").decode("ascii")
 
     if kwargs.get("addtofile"):
         if username not in title and "-" not in title:
@@ -521,7 +525,7 @@ def get_filename(track: BasicTrack, original_filename=None, aac=False, playlist_
 
     ext = ".m4a" if aac else ".mp3"  # contain aac in m4a to write metadata
     if original_filename is not None:
-        original_filename = original_filename.encode("utf-8", "ignore").decode("utf-8")
+        original_filename = original_filename.encode("ascii", "ignore").decode("ascii")
         ext = os.path.splitext(original_filename)[1]
     filename = limit_filename_length(title, ext)
     filename = sanitize_filename(filename)
@@ -657,7 +661,7 @@ def download_hls(client: SoundCloud, track: BasicTrack, title: str, playlist_inf
     if not kwargs.get("onlymp3") and aac_transcoding:
         transcoding = aac_transcoding
         aac = True
-    elif mp3_transcoding:
+    elif not kwargs.get("onlyhq") and mp3_transcoding:
         transcoding = mp3_transcoding
                 
     if not transcoding:
@@ -690,7 +694,7 @@ def download_track(client: SoundCloud, track: BasicTrack, playlist_info=None, ex
     """
     try:
         title = track.title
-        title = title.encode("utf-8", "ignore").decode("utf-8")
+        title = title.encode("ascii", "ignore").decode("ascii")
         logger.info(f"Downloading {title}")
 
         # Not streamable
@@ -945,7 +949,7 @@ def set_metadata(track: BasicTrack, filename: str, playlist_info=None, **kwargs)
             audio.save()
 
 def limit_filename_length(name: str, ext: str, max_bytes=255):
-    while len(name.encode("utf-8")) + len(ext.encode("utf-8")) > max_bytes:
+    while len(name.encode("ascii")) + len(ext.encode("ascii")) > max_bytes:
         name = name[:-1]
     return name + ext
 
