@@ -4,3 +4,14 @@ dist/
 *.egg-info/
 __pycache__/
 *.mp3
+
+# Environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+tmp/
