@@ -87,6 +87,7 @@ scdl me -f
 --auth-token [token]            Specify the auth token to use
 --overwrite                     Overwrite file if it already exists
 --strict-playlist               Abort playlist downloading if one track fails to download
+--add-description               Adds the description to a seperate txt file (can be read by some players)
 ```
 
 
