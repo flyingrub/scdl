@@ -45,7 +45,9 @@ Options:
     --min-size [min-size]           Skip tracks smaller than size (k/m/g)
     --no-playlist-folder            Download playlist tracks into main directory,
                                     instead of making a playlist subfolder
-    --onlymp3                       Download only mp3 files
+    --onlymp3                       Output mp3. The best available source (lossless original or
+                                    Go+ AAC) is recoded to 320kbps mp3; an existing 128kbps mp3
+                                    stream is kept as-is
     --path [path]                   Use a custom path for downloaded files
     --sync [file]                   Compares an archive file to a playlist and downloads/removes
                                     any changed tracks
@@ -367,18 +369,21 @@ def _build_ytdl_output_filename(scdl_args: SCDLArgs, in_playlist: bool, force_su
 
 
 def _build_ytdl_format_specifier(scdl_args: SCDLArgs) -> str:
-    fmt = "ba"
+    constraints = ""
     if scdl_args.get("min_size"):
-        fmt += f"[filesize_approx>={scdl_args['min_size']}]"
+        constraints += f"[filesize_approx>={scdl_args['min_size']}]"
     if scdl_args.get("max_size"):
-        fmt += f"[filesize_approx<={scdl_args['max_size']}]"
+        constraints += f"[filesize_approx<={scdl_args['max_size']}]"
     if scdl_args.get("no_original"):
-        fmt += "[format_id!=download]"
+        constraints += "[format_id!=download]"
     if scdl_args.get("only_original"):
-        fmt += "[format_id=download]"
-    if scdl_args.get("onlymp3"):
-        fmt += "[format_id*=mp3]"
-    return fmt
+        constraints += "[format_id=download]"
+    # --onlymp3 no longer narrows the selection here; we pick the best available
+    # audio (lossless original > Go+ 256k AAC > 128k mp3, within the constraints
+    # above) and recode it to 320kbps mp3 in _build_ytdl_params. Pinning to
+    # [format_id*=mp3] used to force every track onto the 128kbps progressive
+    # stream even when a higher-quality source was available.
+    return f"ba{constraints}"
 
 
 def _build_ytdl_params(url: str, scdl_args: SCDLArgs) -> tuple[str, dict, list]:
@@ -457,6 +462,18 @@ def _build_ytdl_params(url: str, scdl_args: SCDLArgs) -> tuple[str, dict, list]:
 
     if scdl_args.get("flac"):
         params["--recode-video"] = "aiff>flac/alac>flac/wav>flac"
+
+    if scdl_args.get("onlymp3"):
+        # Recode the selected audio to 320kbps CBR mp3. Every non-mp3 source
+        # (lossless originals AND lossy AAC/Opus/Ogg streams) is mapped to mp3;
+        # mp3 is intentionally NOT a source key, so an existing 128kbps mp3 stream
+        # is passed through untouched instead of being needlessly upscaled.
+        params.pop("--remux-video", None)  # avoid yt-dlp's remux/recode conflict warning
+        params["--recode-video"] = (
+            "aiff>mp3/alac>mp3/wav>mp3/flac>mp3/m4a>mp3/aac>mp3/mp4>mp3/"
+            "ogg>mp3/opus>mp3/vorbis>mp3/webm>mp3"
+        )
+        params["--postprocessor-args"] = "VideoConvertor:-b:a 320k"
 
     if not scdl_args.get("no_album_tag"):
         params["--parse-metadata"] += [

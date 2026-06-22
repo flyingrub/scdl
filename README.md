@@ -76,7 +76,9 @@ scdl me -f
 --min-size [min-size]           Skip tracks smaller than size (k/m/g)
 --no-playlist-folder            Download playlist tracks into main directory,
                                 instead of making a playlist subfolder
---onlymp3                       Download only mp3 files
+--onlymp3                       Output mp3. The best available source (lossless original or
+                                Go+ AAC) is recoded to 320kbps mp3; an existing 128kbps mp3
+                                stream is kept as-is
 --path [path]                   Use a custom path for downloaded files
 --remove                        Remove any files not downloaded from execution
 --sync [file]                   Compares an archive file to a playlist and downloads/removes any changed tracks
