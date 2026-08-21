@@ -6,9 +6,9 @@ import re
 import sys
 from pathlib import Path
 
-import yt_dlp.__init__
+import yt_dlp
 from yt_dlp import YoutubeDL, options
-from yt_dlp.__init__ import validate_options as old_validate_options
+from yt_dlp import validate_options as old_validate_options
 from yt_dlp.utils import OUTTMPL_TYPES, preferredencoding, replace_extension
 from yt_dlp.YoutubeDL import _catch_unsafe_extension_error
 
@@ -109,5 +109,5 @@ def create_parser_patched():
 
 YoutubeDL.evaluate_outtmpl = evaluate_outtmpl
 YoutubeDL._prepare_filename = _prepare_filename
-yt_dlp.__init__.validate_options = new_validate_options
+yt_dlp.validate_options = new_validate_options
 options.create_parser = create_parser_patched
